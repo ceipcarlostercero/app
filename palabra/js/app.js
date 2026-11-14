@@ -119,7 +119,14 @@
   var DAY = todayIndex();
   var mode = "daily";   // daily | free | challenge
   var game = null;       // { answer, display, guesses, status, day?, code? }
-  var current = "";
+  // Fila en curso: 5 huecos que se pueden rellenar en cualquier orden (tocando una casilla).
+  var slots = emptySlots(), pos = 0;
+  function emptySlots() { return ["", "", "", "", ""]; }
+  function filled() { return slots.filter(Boolean).length; }
+  function nextEmpty(from) {
+    for (var i = 0; i < LEN; i++) { var j = (from + i) % LEN; if (!slots[j]) return j; }
+    return -1;
+  }
   var busy = false;
 
   function newGame(kind) {
@@ -250,7 +257,7 @@
         if (g) { setTile(t, g[c], ev[c]); t.classList.add("revealed"); }
         else {
           t.classList.remove("revealed");
-          setTile(t, r === game.guesses.length ? current[c] : "", null);
+          setTile(t, r === game.guesses.length ? slots[c] : "", null);
         }
       });
     });
@@ -273,8 +280,8 @@
     rows.forEach(function (row) { row.tiles.forEach(function (t) { t.classList.remove("cursor"); }); });
     if (game.status !== "playing") { keys.enter.classList.remove("ready"); return; }
     var row = rows[game.guesses.length];
-    if (row && current.length < LEN) row.tiles[current.length].classList.add("cursor");
-    keys.enter.classList.toggle("ready", current.length === LEN);
+    if (row && pos >= 0) row.tiles[pos].classList.add("cursor");
+    keys.enter.classList.toggle("ready", filled() === LEN);
   }
 
   // ---------- Toasts / lector de pantalla ----------
@@ -305,23 +312,34 @@
 
   // ---------- Entrada ----------
   function addLetter(ch) {
-    if (busy || game.status !== "playing" || current.length >= LEN) return;
-    current += ch;
-    var t = rows[game.guesses.length].tiles[current.length - 1];
+    if (busy || game.status !== "playing" || pos < 0) return;
+    slots[pos] = ch;
+    var t = rows[game.guesses.length].tiles[pos];
     setTile(t, ch, null);
     t.classList.remove("pop"); void t.offsetWidth; t.classList.add("pop");
+    pos = nextEmpty(pos + 1);
     sfx.key(); updateCursor();
   }
   function removeLetter() {
-    if (busy || game.status !== "playing" || !current.length) return;
-    current = current.slice(0, -1);
-    setTile(rows[game.guesses.length].tiles[current.length], "", null);
+    if (busy || game.status !== "playing" || !filled()) return;
+    // Borra la casilla seleccionada si tiene letra; si no, la anterior con letra.
+    var i = pos >= 0 && slots[pos] ? pos : -1;
+    if (i < 0) for (var j = (pos < 0 ? LEN : pos) - 1; j >= 0; j--) if (slots[j]) { i = j; break; }
+    if (i < 0) for (var k = LEN - 1; k >= 0; k--) if (slots[k]) { i = k; break; }
+    slots[i] = ""; pos = i;
+    setTile(rows[game.guesses.length].tiles[i], "", null);
     sfx.back(); updateCursor();
+  }
+  function moveCursor(to) {
+    if (busy || game.status !== "playing") return;
+    pos = Math.max(0, Math.min(LEN - 1, to));
+    updateCursor();
   }
 
   function submit() {
     if (busy || game.status !== "playing") return;
-    if (current.length < LEN) { shakeRow(); toast("Faltan letras"); return; }
+    var current = slots.join("");
+    if (filled() < LEN) { shakeRow(); toast("Faltan letras"); return; }
     if (!VALID.has(current) && current !== game.answer) { shakeRow(); toast("No está en nuestra lista de palabras"); return; }
     if (settings.hard) {
       var err = hardModeError(current, game.guesses, game.answer);
@@ -329,7 +347,7 @@
     }
     var guess = current, rowIdx = game.guesses.length;
     game.guesses.push(guess);
-    current = "";
+    slots = emptySlots(); pos = 0;
     if (guess === game.answer) game.status = "won";
     else if (game.guesses.length >= TRIES) game.status = "lost";
     if (game.kind === "daily" && game.status !== "playing") recordStats();
@@ -690,7 +708,7 @@
       b.classList.toggle("is-active", on); b.setAttribute("aria-selected", String(on));
     });
     if (m === "challenge") $(".modes").dataset.mode = "none";
-    current = "";
+    slots = emptySlots(); pos = 0;
     if (m === "daily" || m === "free") {
       game = newGame(m);
       if (m === "free") persist();
@@ -725,6 +743,13 @@
     if (k === "enter") submit(); else if (k === "back") removeLetter(); else addLetter(k);
     b.blur();
   });
+  // Tocar una casilla de la fila actual la selecciona para escribir en ella.
+  boardEl.addEventListener("click", function (e) {
+    var t = e.target.closest(".tile"); if (!t || game.status !== "playing") return;
+    var row = rows[game.guesses.length];
+    var i = row ? row.tiles.indexOf(t) : -1;
+    if (i >= 0) moveCursor(i);
+  });
   document.addEventListener("keydown", function (e) {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if ($("dialog[open]")) return;
@@ -732,6 +757,10 @@
     var k = e.key, key = null;
     if (k === "Enter") { key = "enter"; submit(); }
     else if (k === "Backspace" || k === "Delete") { key = "back"; removeLetter(); }
+    else if (k === "ArrowLeft" || k === "ArrowRight") {
+      e.preventDefault();
+      moveCursor((pos < 0 ? (k === "ArrowLeft" ? LEN : LEN - 2) : pos) + (k === "ArrowLeft" ? -1 : 1));
+    }
     else if (k && k.length === 1) {
       var n = norm(k);
       if (/^[a-zñ]$/.test(n)) { key = n; addLetter(n); }
